@@ -1,0 +1,1466 @@
+---
+title: 'Obesity: demographic and life style'
+author: "Gal Levin"
+date: "5/15/2021"
+output:
+  html_document:
+    toc: yes
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# <span style="color:blue">Why this document</span>
+
+I created this document to:
+
+1. Share some insight and thought about the prevalence of obesity, but also to -
+2. Demonstrating data and R skills I acquired: preparation of a dataset, fractioning and querying, visualizations, choosing and performing statistical tests, using loops and custom functions, and walking you, the reader, through all this.
+
+
+# <span style="color:blue">Introduction</span>
+
+Nutrition, Physical Activity, and Obesity - Behavioral Risk Factor Surveillance System collects data on certain lifestyle aspects and the prevalence of obesity among US residents. Here I analyze the dataset, downloaded from the Center for Disease Control: https://chronicdata.cdc.gov/Nutrition-Physical-Activity-and-Obesity/Nutrition-Physical-Activity-and-Obesity-Behavioral/hn4x-zwk7. The goal is to see how demographic factors and reported aspects of lifestyle are associated with the prevalence of obesity.
+
+Libraries that will be used:
+
+
+```` {r include = TRUE, warning = FALSE, message = FALSE}
+
+# Calling libraries:
+library(dplyr)
+options(dplyr.summarise.inform = FALSE)
+library(ggplot2)
+library(patchwork)
+library (car)
+library(tidyr)
+```
+
+
+# <span style="color:blue">The data</span> 
+
+Data were collected from states, and, gradually over the years, territories started providing data as well.
+
+For this analysis, every state / territory is given the same weight, regardless of the population size and the sample size. This enables looking for associations across different populations. At times I looked to see if association is maintained across years, but we need not assume that each year reflects a completely different population; some people might have provided data year after year. 
+
+I already made some analysis of an older download of the data. For the crafting of this document, I downloaded a more recent data file from the CDC site. However, it looks like some of the old data was not included in the updated version. Not able to find out why, I joined the new and the old datasets to one.
+
+Here is how the dataset was prepared for this analysis:
+
+
+```` {r include = TRUE}
+
+# Reading downloaded file:
+obesity_old <- read.csv("Obesity.csv", header = T, sep = ",")
+obesity_new <- read.csv("Obesity_2021.csv", header = T, sep = ",")
+
+# Selecting columns to analyze:
+keep_col<-c("YearEnd","LocationDesc", "Question", "Sample_Size",
+            "StratificationCategory1", "Stratification1", "Data_Value")
+
+# Keeping only those columns:
+obesity__old_lean <- select(obesity_old, all_of(keep_col))
+obesity__new_lean <- select(obesity_new, all_of(keep_col))
+```
+
+
+As mentioned above, it looks like some of the old data were not included in the more recent dataset, namely, the responses to the questions about dietary habits:
+
+
+```` {r include = TRUE}
+
+anti<-anti_join(obesity_old, obesity_new, by=keep_col)
+unique(anti$Question)
+```
+
+
+Not being able to find out why this part of the data was excluded, for the purpose of this analysis the two data sets were appended and duplicated rows removed. Also removed are the national data, as the aim here is to look for associations that are kept across different (US) populations; looking at national data gives higher weight to large state and states that were more successful in collecting data.
+
+```` {r include = TRUE}
+
+obesity_join<-unique(rbind(obesity__old_lean, obesity__new_lean)%>%
+                       arrange(YearEnd, LocationDesc, Question, Sample_Size,
+                               StratificationCategory1, Stratification1))%>%
+  filter(!LocationDesc == "National") 
+```
+
+
+As for missing values: In this case, the values that are missing are on rows lacking both data values and sample size:
+
+
+```` {r include = TRUE}
+
+identical(is.na(obesity_join$Sample_Size), is.na(obesity_join$Data_Value))
+```
+
+
+Why is that? 
+
+Some clarification is provided by looking at the smallest sample size:
+
+
+```` {r include = TRUE}
+
+min(obesity_join$Sample_Size, na.rm=T)
+```
+
+
+Looks like samples of less than 50 were deemed too small to represent a demographic subgroup and was not included. Not seeing merit in assigning an estimated value to those missing data, I opted not to include those rows in the analysis.
+
+
+```` {r include = TRUE}
+
+obesity_final <- obesity_join[complete.cases(obesity_join), ]
+
+# Verifying that no missing data left:
+sum(is.na(obesity_final))
+```
+
+
+Let's look at the rows that were removed:
+
+
+```` {r include = TRUE}
+
+obesity_na<-obesity_join[rowSums(is.na(obesity_join)) > 0, ]
+```
+
+
+What percentage of rows was removed?
+
+
+```` {r include = TRUE}
+
+nrow(obesity_na)/nrow(obesity_join)*100
+```
+
+
+This is a substantial fraction.
+
+Let's get an idea as to where and when are the missing data likely to come from.
+
+As from where:
+
+
+```` {r include = TRUE}
+
+miss_location <- sort(table(obesity_na$LocationDesc), decreasing = T)
+head(miss_location, 10)
+tail(miss_location, 10)
+```
+
+
+Some states indeed provided more missing data than others. As expected, at the top of the lists are states and territories with smaller populations overall.
+
+As from when:
+
+
+```` {r include = TRUE}
+
+miss_year <- sort(table(obesity_na$YearEnd), decreasing = T)
+miss_year
+```
+
+
+There seems to be a trend: with time, more sub-population did not hit the minimum sample size mark. 
+
+But although the missing values are not homogeneously spread in time and place, no year and no location clearly stand out an exception. The quality of the data may not be optimal, but there is no reason to think the data would mislead us.
+
+Lastly, let's look for odd values, if exist, in the columns that were kept. This can be done by looking at the unique values within the columns, or, when the records are numbers and can take endless values, at the head and the tail of the column's frequency table; that is where extreme values as well as values of exceptional formats are likely to be found.
+
+
+```` {r include = TRUE}
+
+# Year end column:
+class(obesity_final$YearEnd)
+unique(obesity_final$YearEnd)
+
+# Location column:
+class(obesity_final$LocationDesc)
+unique(obesity_final$LocationDesc)
+
+# Questions column:
+class(obesity_final$Question)
+unique(obesity_final$Question)
+
+# Sample size column:
+class(obesity_final$Sample_Size)
+samp_size<-table(obesity_final$Sample_Size)
+head(samp_size)
+tail(samp_size)
+
+# Stratification Category column:
+class(obesity_final$StratificationCategory1)
+unique(obesity_final$StratificationCategory1)
+
+# Stratification column:
+class(obesity_final$Stratification1)
+unique(obesity_final$Stratification1)
+
+# Data value column:
+class(obesity_final$Data_Value)
+dat_val<-table(obesity_final$Data_Value)
+head(dat_val)
+tail(dat_val)
+```
+
+
+All looks reasonable.
+
+So, let's see what the data are telling us.
+
+
+# <span style="color:blue">Demographics</span>
+
+
+Let's start by looking at the spread of obesity within different demographic stratifications.
+
+
+## <span style="color:red">Gender and the prevalence of obesity</span>
+
+
+Does the rate of obesity depend on gender? (Gender is binary in this dataset.)
+
+
+```` {r include = TRUE, warning = FALSE, message = FALSE, fig.height = 4, fig.width = 5.5, fig.align="center"}
+
+# Extracting the data:
+gender<-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=="Gender")%>%
+  rename(gender = Stratification1)
+
+# Histogram:
+ggplot(gender, aes(x =Data_Value))+
+  geom_histogram(aes(color = gender, fill = gender),
+                 alpha = 0.2, position = "identity") +
+  scale_fill_manual(values = c("red", "blue"))+
+  ylab("count")+
+  xlab("% obese")+
+  ggtitle ("obesity by gender")
+```
+
+
+Values derived from both genders peak around the same values, though the histogram for males is "thinner"; there are less sub-populations of men with very low or with very high rates of obesity than of women. 
+
+As for statistical significance: Let's separate the data set by genders:
+  
+
+```` {r include = TRUE}
+
+female<-gender%>%
+  filter(gender == "Female")
+
+male<-gender%>%
+  filter(gender == "Male")
+```
+
+
+Common statistical tests to determine whether two populations are significantly different from each other are the z and the t tests. However, normal distribution is one of the underline assumptions behind both tests. Are our populations normally distributed? 
+
+
+```` {r include = TRUE}  
+
+shapiro.test(female$Data_Value)
+shapiro.test(male$Data_Value)
+```
+  
+
+They are not. Kruskal-Wallis test, however, does not require a normal distribution and can be used instead:  
+  
+
+```` {r include = TRUE}
+
+kruskal.test(Data_Value ~ gender, data = gender)
+```
+  
+
+Judged by this test, the prevalence of obesity is not significantly different between the two genders. 
+
+
+## <span style="color:red">Age and the prevalence of obesity</span>
+
+
+Does the likelihood of being obese change with age?
+
+
+```` {r include = TRUE, warning = FALSE, fig.height = 4, fig.width = 5.5, fig.align="center"}
+
+# Extracting the data:
+age <-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Age (years)')%>%
+  group_by(LocationDesc, Stratification1)%>%
+  summarise(average=mean(Data_Value))
+
+# Box plot:
+ggplot(age, aes(x=Stratification1, y=average, fill=Stratification1))+
+  scale_fill_brewer(palette="PRGn")+
+  geom_boxplot(trim=FALSE, alpha=0.7)+
+  ylab("% obese")+
+  xlab("age, years")+
+  ggtitle ("obesity by age")+
+  theme(legend.position="none",
+        text = element_text(size = 14), 
+        axis.text.x=element_text(size=12,
+                                 angle=45, hjust = 0.9),
+        axis.text.y = element_text(size = 12))+  
+  ylim(0,55)
+```
+
+
+We see that there is an increase in the rate of obesity with age, reaching plateau at mid-age, then a decrease in the older age group.
+
+Is the effect of age statistically significant?
+In order to decide which statistical test to use to answer this, let’s check whether our samples are normally distributed:
+
+
+```` {r include = TRUE}
+
+age_groups<-unique(age$Stratification1)
+
+for (grp in seq_along(age_groups)) {
+  a<-age%>%
+    filter(Stratification1==age_groups[grp])
+  cat(paste("age group", age_groups[grp], ":", "\n"))
+  print(shapiro.test(a$average)[2])
+}
+```
+
+
+Since some of the data groups are not normally distributed, statistical tests that do not require normal distribution are used: 
+
+
+```` {r include = TRUE}
+
+kruskal.test(average ~ Stratification1, data = age)
+```
+
+
+Age effect is statistically significant. 
+
+Which age groups are different from which?
+
+
+```` {r include = TRUE}
+
+pairwise.wilcox.test(age$average, age$Stratification1,
+                     p.adjust.method = "BH")
+```
+
+
+We see that the increase in the rate of obesity from youth to mid age is statistically significant. Also significant is the decrease in the prevalence in the older age group; it is now statistically indistinguishable from the that of young adults (25 - 24 years old).
+
+Two different types of explanations might be behind this trend:
+
+1. Reasons that are tied to age itself. A hypothetical example for such an explanation would be that appetite wanes in age and people eat less. Another hypothetical explanation, a grim one, is that obese people are less likely to live to old age.
+
+2. Reasons stating a cohort effect: those who were born on the 40s are different than those who were born in the 90s, be is culturally or biologically (for example, they might have been exposed to different environmental pollutant at youth that created epi-genetic change). 
+
+The two types of root causes would lead to different predictions regarding future prevalence of obesity. Reasons tied to age itself would predict that the increase, then decrease in the prevalence of obesity will continue in the future. Cohort-effect reasons would predict that relatively thin population would keep being thin as they age, and likewise, cohorts with high obesity rate will continue being so. Such predictions are important for people in the public health area, trying to form policies and allocate resources for the future. It is also important for business developers, trying to plan for future markets. So, which one it is?
+
+While this data does not provide a clear answer, it does provide a suggestion. This is because the data were collected during about a decade. During that time, each cohort (almost) moved to the next cohort: those who were in their twenties when the project took off are now in their thirties, those who were in their thirties are now in their forties. etc. We can plot the data for each year and see whether they all look similar - that would point to an age-related explanation, or are changing, which would point to cohort differences.
+
+Here are the plots:
+
+
+```` {r include = TRUE, fig.align="center", fig.width = 10}
+
+# Extracting the data:
+age <-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Age (years)')
+
+# Creating a list to store the plots:
+List <- list()
+
+# The survey years:
+age_year<-sort(unique(age$YearEnd))
+
+# Looping over the years and creating a plot for each:
+for (yir in seq_along(age_year)) {
+  age_plot <- age%>%
+    filter (YearEnd==age_year[yir])%>%
+    ggplot(aes(x=Stratification1, y=Data_Value, fill=Stratification1))+
+    scale_fill_brewer(palette="PRGn")+
+    geom_boxplot(alpha=0.7)+
+    ylab("% obese")+
+    xlab("age, years")+
+    theme(legend.position="none", 
+          axis.text.x=element_text(size=10, 
+                                   angle=45, hjust = 0.9))+
+    ggtitle (age_year[yir])+
+    ylim(0,55)
+  
+  List[[yir]]<-age_plot}
+
+# Wrapping plots:
+wp<-wrap_plots(List,nrow = 2)
+wp + plot_annotation(
+  title = "obesity by age over the years:", theme = theme(plot.title = element_text(size = 16)))
+```
+
+
+Similar patterns are seen over the years, pointing to explanations related to age itself.
+
+## <span style="color:red">Race and the prevalence of obesity</span>
+
+
+Does obesity rate vary between different races / ethnicities? 
+
+```` {r include = TRUE, warning = FALSE, fig.dim = c(7, 5), fig.align="center"}
+
+# Extracting the data:
+race<-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Race/Ethnicity')
+
+# Ordering the races / ethnicities by obesity rate, to ease visualization.
+race%>%
+  group_by(Stratification1) %>%
+  summarise(number=n(), average=mean(Data_Value), sd=sd(Data_Value))%>%
+  arrange(average)
+
+dif_race<-c("Asian", "Other", "Non-Hispanic White",  
+            "Hispanic", "2 or more races", 
+            "American Indian/Alaska Native",
+            "Non-Hispanic Black",
+            "Hawaiian/Pacific Islander")
+
+# The plot:
+obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Race/Ethnicity')%>%
+  arrange(Stratification1) %>%
+  mutate(Stratification1=factor(Stratification1, levels = dif_race))%>%
+  ggplot(aes(x=Stratification1, y=Data_Value, fill=Stratification1))+ 
+  geom_violin(trim=FALSE)+
+  ylab("% of obese")+
+  ggtitle ("race / ethnicity and obesity")+
+  theme(legend.position="none",
+        text = element_text(size = 14),
+        axis.text.x=element_text(size=10, 
+                                 angle=45, hjust = 0.9),
+        axis.title.x = element_blank())+
+  ylim(0,80)  
+```
+
+
+The use of violin plot demonstrates nicely that not all the populations are homogenous: some ethnicity groups are composed of more than one cluster of data, each distributed around its own median. 
+
+Are the differences statistically significant?
+
+Checking data for normal distribution:
+
+
+```` {r include = TRUE}
+
+race_groups<-unique(race$Stratification1)
+
+for (grp in seq_along(race_groups)) {
+  a<-race%>%
+    filter(Stratification1==race_groups[grp])
+  cat(paste(race_groups[grp], "ethnicity group:",":\n"))
+  print(shapiro.test(a$Data_Value)[2])
+}
+```
+
+
+Since some of the groups are not normally distributed, statistical tests are used that do not require normal distribution:
+
+
+```` {r include = TRUE}
+
+kruskal.test(Data_Value ~ Stratification1, data = race)
+```
+
+
+The differences are statistically significant. 
+
+Which race groups are different from which?
+
+
+```` {r include = TRUE, fontsize=6}
+
+pairwise.wilcox.test(race$Data_Value, race$Stratification1,
+                     p.adjust.method = "BH")
+```
+
+
+Judged by the results of this test, every ethnicity has its own rate of obesity, statistically different from that of the other, with an exception: Hispanic and those identified as of 2 or more races have level of obesity that is statistically indistinguishable. This, however, is not incredibly useful information:  more and more American are, in fact, of more than one race, it is hard to know from this dataset what commonality do people who affiliate themselves as such have - physiological or cultural.
+
+
+## <span style="color:red">Year of survey and the prevalence of obesity: changes over time</span>
+
+
+Is there a time trend in the prevalence of obesity?
+
+
+```` {r include = TRUE, warning = FALSE, fig.dim = c(6, 4), fig.align="center"}
+
+# Extracting the data:
+over_years <- obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+# In order to include each participant only once, only one stratification category is chosen.
+  filter(StratificationCategory1=='Age (years)')
+
+# Presenting the data in a violin plot:
+over_years%>%
+  arrange(YearEnd) %>%
+  mutate(YearEnd=factor(YearEnd, levels = unique(YearEnd)))%>%
+  ggplot(aes(x=YearEnd, y=Data_Value, fill=YearEnd))+
+  scale_fill_brewer(palette="BrBG")+
+  geom_violin(trim=FALSE)+
+  stat_summary(fun.y=median, geom="point", size=2, color="black")+
+  ylab("% of obese")+
+  ggtitle ("obesity rate over the years")+
+  theme(legend.position="none", 
+        text = element_text(size = 14),
+        axis.text.x=element_text(size=12, 
+                                 angle=45, hjust = 0.9),
+        axis.title.x = element_blank())+
+  ylim(0,60)+
+  ggtitle ("obesity rate over the years")
+```
+
+
+The black dot within the violins bars mark the median of the respective sample. Following the medians over years, we see that obesity level increases over the years. 
+
+Is the trend statistically significant?
+
+First, checking if the data samples are of normal distribution:
+
+
+```` {r include = TRUE}
+
+years<-unique(over_years$YearEnd)
+
+for (yr in seq_along(years)) {
+  a<-over_years%>%
+    filter(YearEnd==years[yr])
+  cat(paste("the year of ", years[yr], ":","\n"))
+  print(shapiro.test(a$Data_Value)[2])
+}
+```
+
+
+They are not; Kruskal_Wallis test it is!
+
+
+```` {r include = TRUE}
+
+kruskal.test(Data_Value ~ YearEnd, data = over_years)
+```
+
+
+Highly significant differences. And which year is different from which?
+
+
+```` {r include = TRUE}
+
+pairwise.wilcox.test(over_years$Data_Value, over_years$YearEnd,
+                     p.adjust.method = "BH")
+```
+
+
+It looks as if the change is very gradual. Obesity rate does not look much different from one year to the next, but the over a longer time span, the certainty that obesity rate increases, reflected in decrease of the p-value, becomes higher.
+
+
+## <span style="color:red">Area of residency and the prevalence of obesity</span>
+
+
+Do states / territories vary in prevalence of obesity?
+
+
+```` {r include = TRUE,  layout="l-body-outset"}
+
+# Extracting the data:
+residency <-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  
+# Filtering to only one stratification, so that each person is counted only once.
+  filter(StratificationCategory1=='Age (years)')%>%
+  group_by(LocationDesc)
+
+res_sum<-residency%>%  
+  summarise(average=mean(Data_Value))%>%
+  arrange(average)
+
+as.data.frame(res_sum)
+```
+
+
+Different states have different rates of obesity, but is the difference statistically significant? Turns out it is, whether you test is with ANOVA or with Kruskal-Wallis test. 
+
+
+```` {r include = TRUE}
+
+residency_anova <- aov(Data_Value ~ LocationDesc, data = residency)
+summary(residency_anova)
+
+kruskal.test(Data_Value ~ LocationDesc, data = residency)
+````
+
+
+One can speculate numerous reasons for this association between state residency and obesity. It could be a result of different lifestyle, whether because of local culture or local circumstances. It could reflect homophilia - wanting to be among people like us. It could also result from environmental risk / protection factors. A very plausible explanation, though, is that local obesity level reflects the composition of the local population, with respect to race / ethnicity and age, as we saw above, and likely other factors as well.
+
+Checking which state's obesity prevalence is significantly different from which would be rather tedious. However, a related question of interest is whether the difference is not merely between states, but also between regions within the United States. Below I separate the states to regions following Wikipedia, with the justification, quote: "Many regions are defined in law or regulations by the federal government; others by shared culture and history; and others by economic factors."
+
+
+```` {r include = TRUE, warning = FALSE, fig.dim = c(6, 4), fig.align="center"}
+
+# Grouping the locations into regions:
+residency_region<-residency%>%
+  mutate(region = case_when(LocationDesc %in% c("Maine", "Rhode Island", "Vermont", "Connecticut", "New Hampshire", "Massachusetts") ~ "New England",
+                            LocationDesc %in% c("New York", "New Jersey", "Pennsylvania") ~ "MidAtlalntic",
+                            LocationDesc %in% c("Virginia", "West Virginia", "Kentucky", "Delaware", "Maryland", 
+                                                "District of Columbia", "North Carolina", "South Carolina", "Tennessee", "Arkansas", "Louisiana", "Florida", 
+                                                "Georgia", "Alabama", "Mississippi") ~ "Southern",
+                            LocationDesc %in% c("michigan", "North Dakota", "South Dakota", "Iowa", "Minnisota", 
+                                                "Kansas", "Nebraska", "Ohio", "Indiana", "Illinois", "Wisconsin", "Missouri") ~ "MidWest",
+                            LocationDesc %in% c("Texas", "Arizona", "New Mexico", "Oklahoma") ~ "SouthWest",
+                            LocationDesc %in% c("Montana", "Idaho", "Colorado", "Utah", "Wyoming", "Nevada") ~ "RockyMountains",
+                            LocationDesc %in% c("California", "Oregon", "Washington") ~ "Pacific",
+                            TRUE ~ "territories"))
+
+# The plot:
+residency_region%>%
+  mutate(region=factor(region, levels=unique(region)))%>%
+  ggplot(aes(x=reorder(region, Data_Value, FUN = median),region, y=Data_Value, fill=region))+
+  geom_boxplot() +
+  ylab("% obese")+
+  xlab("age, years")+
+  theme(legend.position="none",
+        axis.title.x=element_blank(),
+        axis.text.x=element_text(size=12,
+                                 angle=45, hjust = 0.9))+
+  ggtitle ("obesity by region")+
+  theme(text = element_text(size = 14))+
+  ylim(0,50)
+```
+
+
+And as for the statistical significance of the difference between regions: checking first for a normal distribution:
+
+
+```` {r include = TRUE}
+
+dif_regions<-unique(residency_region$region)
+
+for (rgn in seq_along(dif_regions)) {
+  a<-residency_region%>%
+    filter(region==dif_regions[rgn])
+  cat(paste(dif_regions[rgn], ":","\n"))
+  print(shapiro.test(a$Data_Value)[2])
+}
+```
+
+
+Again, we have samples that are not of normal distribution and the Kruskal-Wallis / Wilcoxon Rank Sum tests will be applied:
+
+
+```` {r include = TRUE}
+
+kruskal.test(Data_Value ~ region, data = residency_region)
+```
+
+
+Highly significant differences. And who is different than whom?
+
+
+```` {r include = TRUE, fontsize=10}
+
+pairwise.wilcox.test(residency_region$Data_Value, residency_region$region,
+                     p.adjust.method = "BH")
+```
+
+
+We see that there are four regions with low obesity rate that is statistically identical: Rocky Mountain, New England, Pacific, and Mid Atlantic. On the higher obesity rate, Southwestern, Southern, and the MidWestern regions are statistically the same. 
+
+
+##  <span style="color:red">Education and the prevalence of obesity</span>
+
+
+Is obesity associated with level of education?
+
+
+```` {r include = TRUE, fig.dim = c(6, 5), fig.align="center"}
+
+# Extracting the data:
+education <-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Education')
+
+# Visualization - box plot:
+education%>%
+  arrange(Stratification1)%>%
+  mutate(Stratification1 = factor(Stratification1, levels=c("Less than high school", "High school graduate", "Some college or technical school", "College graduate")))%>%
+  ggplot(aes(x=Stratification1, y=Data_Value, fill=Stratification1))+ 
+  geom_boxplot()+
+  ylab("% obese")+
+  theme(legend.position="none",
+        text = element_text(size = 14),
+        axis.text.x=element_text(size=12, 
+                                 angle=45, hjust = 0.9),
+        axis.title.x = element_blank())+
+  ggtitle ("obesity by education")+
+  ylim(0,50)
+```
+
+
+Obesity is less prevalent among the more educated. Quantitatively, the biggest difference is between college educated and all other lower level of education.
+
+Checking statistical significance, starting with checking whether the data are of normal distribution:
+
+
+```` {r include = TRUE}
+
+ed_levels<-unique(education$Stratification1)
+
+for (lvl in seq_along(ed_levels)) {
+  a<-education%>%
+    filter(Stratification1==ed_levels[lvl])
+  cat(paste("level of education: ", ed_levels[lvl], ":","\n"))
+  print(shapiro.test(a$Data_Value)[2])
+}
+```
+
+
+One of the samples is not of normal distribution, we use the Kruskal-Wallis test:
+
+
+```` {r include = TRUE}
+
+kruskal.test(Data_Value ~ Stratification1, data = education)
+```
+
+
+Highly significant differences. And which level of education is different from which?
+
+
+```` {r include = TRUE}
+
+pairwise.wilcox.test(education$Data_Value, education$Stratification1,
+                     p.adjust.method = "BH")
+```
+
+
+They are all different from each other.
+
+Why would obesity rate go down as education goes up is not easy to explain. It could be that high education is associated with medical literacy that enable people to make better health decisions. I personally am not persuaded by this explanation, primarily because the knowledge of how to lose weight is very accessible in our society, not hidden in obscure libraries of some exclusive academic institutes. I suspect that this has to do with the cost and accessibility of education, where obese people are less advantageous, as can be seen below.
+
+
+##  <span style="color:red">Income and the prevalence of obesity </span>
+
+
+Is income level associated with obesity?
+
+
+```` {r include = TRUE, fig.dim = c(7, 4.5), fig.align="center"}
+
+# Extracting the data. Note, some participants did not report income; I opt not to include this category.
+income <-obesity_final%>%
+  filter(Question=='Percent of adults aged 18 years and older who have obesity')%>%
+  filter(StratificationCategory1=='Income')%>%
+  filter(!Stratification1=="Data not reported") 
+
+# To arrange the plot by order of income:
+for (i in 1:(length(income$Stratification1))) 
+  if(income$Stratification1[i]== "Less than $15,000"){
+    income$Stratification1[i]<-"$0 - $14,999"
+  }
+
+# The plot:
+income%>%
+  group_by(Stratification1)%>%
+  summarise(number=n(), average=mean(Data_Value), 
+            sd=sd(Data_Value))%>%
+  mutate(se=(sd/sqrt(number)))%>%
+  ggplot(aes(x=Stratification1, y=average, fill=Stratification1))+
+  geom_bar(stat="identity")+
+  scale_fill_brewer(palette="PiYG")+
+  geom_errorbar(aes(x= Stratification1, ymin=average-se, ymax=average+se), width=0.2, color="black", alpha=2, size=1)+
+  ylab("% obese")+
+  xlab("yearly income")+
+  ggtitle ("Income and the prevalence of obesity")+
+  theme(legend.position="none", 
+        axis.text.x=element_text(size=10,
+                                 angle=45, hjust = 0.9),
+        axis.text.y = element_text(size=10),
+        plot.title = element_text(size = 14),
+        axis.title = element_text(size = 14))+
+  ylim(0,45)
+```
+
+
+Obesity is lower among those with higher income.  
+
+Are the differences significant?
+
+Checking first whether the data is of normal distribution:
+
+
+```` {r include = TRUE}
+
+income_levels<-unique(income$Stratification1)
+for (inc in seq_along(income_levels)) {
+  a<-income%>%
+    filter(Stratification1==income_levels[inc])
+  cat(paste("yearly income: ", income_levels[inc], ":","\n"))
+  print(shapiro.test(a$Data_Value)[2])
+}
+```
+
+
+They are; ANOVA could be appropriate.
+
+
+```` {r include = TRUE}
+
+income$Stratification1<-factor(income$Stratification1)
+income_anova <- aov(Data_Value ~ Stratification1, data = income)
+summary(income_anova)
+```
+
+
+The difference is statistically significant. Which levels of income are different from each other?
+
+
+```` {r include = TRUE}
+income_thsd<-TukeyHSD(income_anova, which = "Stratification1")
+as.data.frame(income_thsd$Stratification1)
+```
+
+
+Not a very friendly presentation, but the general picture according to this test is, obesity level is rather statistically distinct for the different income levels.
+
+Several reasons could be behind this association. It could be that people with more income can take better care of themselves, affording healthier food and leisure exercise. But the causality may be to the opposite direction: obese people face disadvantage in the hiring process and may be more likely to suffer co-morbidities that prevent them from keeping high-income positions. In addition, as suggested by the previous section, obese people are less likely to get higher education that could put them in a higher income bracket. Thus, education and income may intertwine when it comes to obesity: obese people tend to make less money, therefore are less likely to afford the education that would help them earn more.
+
+
+# <span style="color:blue">Obesity and life style </span>
+
+
+So far we looked at the associations between demographics and obesity. Some of the demographic stratifications, like age, race and gender, are a given. Others, like area of residency, education, and income, are more malleable. Let us now look how life style habits, that to a large extend can be modified, are associated with the prevalence of obesity.
+
+
+## <span style="color:red">Obesity and eating habits</span>
+
+
+Including a lot of fruits and vegetables in the diet is frequently promoted as a mean to avoid obesity. Here we can look at correlation between not including much of them in the diet and obesity across this populations and years.
+
+The relevant questions in this data sets are:
+
+1. "Percent of adults who report consuming fruit less than one time daily"     
+2. "Percent of adults who report consuming vegetables less than one time daily"
+3.  "Percent of adults aged 18 years and older who have obesity"
+
+For the sake of presentation, they will be given shorter, but descriptive, names. 
+
+First, let's look at the percentage of people who reported shunning vegetables or shunning fruits.
+
+Starting with fruits:
+
+
+```` {r include = TRUE, fig.align="center"}
+
+# Extracting the data:
+diet_habits_fruits <-obesity_final%>%
+  filter(Question=="Percent of adults who report consuming fruit less than one time daily")%>%
+# To include each responder only once, filtering in only one stratification.
+  filter(StratificationCategory1=="Age (years)")
+
+# Visualization:
+years<-sort((unique(diet_habits_fruits$YearEnd)))
+Age<-sort((unique(diet_habits_fruits$Stratification1)))
+
+List <- list()
+
+for (yir in seq_along(years)) {
+  
+  p<-diet_habits_fruits%>%
+    filter(YearEnd == years[yir])%>%
+    arrange(Stratification1) %>%
+    mutate(Stratification1=factor(Stratification1))%>%
+    ggplot(aes(x=Stratification1, y=Data_Value, fill=Stratification1))+ 
+    geom_boxplot()+
+    ylab("% of participants") +
+    xlab("age, years")+
+    theme(legend.position="none", 
+          axis.text.x=element_text(size=7, 
+                                   angle=45, hjust = 0.9),
+          axis.title.x = element_blank())+
+    ggtitle (years[yir])+
+    ylim(0,70)+
+    scale_fill_manual(values=c("red", "cornsilk3", "darkgreen", "deepskyblue","coral4", "darkolivegreen2"))
+  List[[yir]]<-p}
+
+# Wrap plots:
+x<-wrap_plots(List,nrow = 2)
+x+ plot_annotation(
+  title = "% respondants reporting eating very little fruits", theme = theme(plot.title = element_text(size = 14)))
+```
+
+
+It appears that the fraction of people who shun fruits is about constant over the years and comparable among the age groups, although there is a trend of decrease as age goes up (less people shun fruits).
+
+As for shunning vegetables:
+
+
+```` {r include = TRUE, fig.align="center"}
+
+# Extracting the data:
+diet_habits_vegies <-obesity_final%>%
+  filter(Question=="Percent of adults who report consuming vegetables less than one time daily")%>%
+# To include each responder only once, filtering in only one stratification.
+  filter(StratificationCategory1=="Age (years)")
+
+# Visualization:
+years<-sort((unique(diet_habits_vegies$YearEnd)))
+Age<-sort((unique(diet_habits_vegies$Stratification1)))
+
+List <- list()
+
+for (yir in seq_along(years)) {
+  
+  p<-diet_habits_vegies%>%
+    filter(YearEnd == years[yir])%>%
+    arrange(Stratification1) %>%
+    mutate(Stratification1=factor(Stratification1))%>%
+    ggplot(aes(x=Stratification1, y=Data_Value, fill=Stratification1))+ 
+    geom_boxplot()+
+    ylab("% of participants") +
+    xlab("age, years")+
+    theme(legend.position="none", 
+          axis.text.x=element_text(size=7, 
+                                   angle=45, hjust = 0.9),
+          axis.title.x = element_blank())+
+    ggtitle (years[yir])+
+    ylim(0,70)+
+    scale_fill_manual(values=c("deeppink", "bisque4", "darkseagreen", "blue","burlywood", "darkgreen"))
+  List[[yir]]<-p}
+
+# Wrap plots:
+x<-wrap_plots(List,nrow = 2)
+x+ plot_annotation(
+  title = "% respondants  reporting eating very little vegetables", theme = theme(plot.title = element_text(size = 14)))
+```
+
+
+Avoiding vegetables are also rather stable over time and over age groups, except for somewhat higher fraction of vegetable avoiders among the youngest age group. Also notable: less Americans avoid vegetables that fruits.
+
+With that picture in mind, let's look to what extent low consumption of fruits and of vegetables is associated with obesity. Let's prepare the data:
+
+
+```` {r include = TRUE}
+
+# Extracting data:
+diet_habits<-obesity_final%>%
+  filter(Question %in% c("Percent of adults aged 18 years and older who have obesity",
+                         "Percent of adults who report consuming fruit less than one time daily",
+                         "Percent of adults who report consuming vegetables less than one time daily"))%>%
+  filter(StratificationCategory1 == "Age (years)")%>%
+  select ("YearEnd", "LocationDesc", "Question", "Stratification1", "Data_Value")
+
+# Widening the table: every question gets a column to itself:
+diet_habits_wide<- spread(diet_habits, Question, Data_Value)%>%
+  
+# Shortening the names of the columns:  
+  rename(obesity_rate = "Percent of adults aged 18 years and older who have obesity")%>%
+  rename(little_fruit="Percent of adults who report consuming fruit less than one time daily")%>%
+  rename(little_vegies="Percent of adults who report consuming vegetables less than one time daily")
+
+# Removing rows from years when dietary related questions were not included:
+obesity_diet <- diet_habits_wide[complete.cases(diet_habits_wide), ]
+```
+
+
+We can now look at a correlation between obesity rate and percentage of people avoiding dietary fruits or dietary vegetables. To have an intuitive sense of how strong the correlation is, we can use an intuitive "positive control", looking at correlation between avoiding fruits and avoiding vegetables. Though not backed here by any research finding, it makes intuitive sense that those who try to adhere to healthy diet would consume much of both while those who prefer processed food might not care much for either. 
+
+But first let's check, are our samples of normal distribution? 
+
+
+```` {r include = TRUE}
+
+shapiro.test(obesity_diet$obesity_rate)[2]
+shapiro.test(obesity_diet$little_fruit)[2]
+shapiro.test(obesity_diet$little_vegies)[2]
+```
+
+
+They are not. Spearman's coefficient test is therefore more suitable.
+
+
+```` {r include = TRUE}
+
+# Spearman's test as a function:
+spearman_corr <- function(x,y){
+  a<-cor<-cor.test(x, y, method = "spearm",  exact = FALSE)
+  return (paste(a[4], ",  p value: ", a[3]))
+}
+
+# Checking correlation:
+print("correlation between little consumption of fruits and little consumption of vegetables:")
+spearman_corr(obesity_diet$little_fruit,
+              obesity_diet$little_vegies)
+
+print("correlation between little consumption of fruits and obesity rate:")
+spearman_corr(obesity_diet$little_fruit,
+              obesity_diet$obesity_rate)
+
+print("correlation between little consumption of vegetabels and obesity rate:")
+spearman_corr(obesity_diet$little_vegies,
+              obesity_diet$obesity_rate)
+```
+
+
+Looks like the intuition behind the "positive control" kind of holds: there is a moderate, positive correlation between eating little fruits and eating little vegetables. The correlation, however, is much weaker between obesity and eating either little fruits or eating little vegetables. Contrary to expectation, the correlation between avoiding vegetables and the rate of obesity is negative! Shunning vegetables is associated with less, not more, obesity.
+
+Let's visualize.
+
+
+```` {r include = TRUE, fig.align="center"}
+
+a<-ggplot(obesity_diet, aes(little_vegies, little_fruit)) +
+  geom_point(size = 0.5, color = "red") +
+  stat_ellipse()+
+  ylab("% eating little fruits")+
+  xlab("% eating little vegetabels")+
+  ggtitle (" eating little vegetrables vs. little fruits ")
+
+b<-ggplot(obesity_diet, aes(little_fruit, obesity_rate)) +
+  geom_point(size = 0.5, color = "blue") +
+  stat_ellipse()+
+  ylab("% obese")+
+  xlab("% eating little fruit")+
+  ggtitle (" obesity rate vs. eating little fruits ")
+
+c<- ggplot(obesity_diet, aes(little_vegies, obesity_rate)) +
+  geom_point(size = 0.5, color = "darkgreen") +
+  stat_ellipse()+
+  ylab("% obese")+
+  xlab("% eating little vegetables")
+
+diet_obesity_plot<-a + b + c + 
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    title = "obesity and diet habits", theme = theme(plot.title = element_text(size = 18)))
+
+diet_obesity_plot
+```
+
+
+Note that the data points are clustered, and this may mask some underline relationships.  The visualization doesn't tell us why the clustering: do the different clusters align with level of income? Level of education? Maybe the reason for the clustering is not even within the dataset! Maybe there is a cluster for night owls and a cluster for early birds, maybe easy going and stubborn. We cannot tell by this accumulative representation.
+
+But I hazard suggesting breaking the data by age groups and take another look.
+
+
+```` {r include = TRUE}
+
+young_adults<-obesity_diet%>%
+  filter(Stratification1=="18 - 24")
+
+adults<-obesity_diet%>%
+  filter(Stratification1=="25 - 34")
+
+older_adults<-obesity_diet%>%
+  filter(Stratification1=="35 - 44")
+
+midage<-obesity_diet%>%
+  filter(Stratification1=="45 - 54")
+
+older_midage<-obesity_diet%>%
+  filter(Stratification1=="55 - 64")
+
+older<-obesity_diet%>%
+  filter(Stratification1=="65 or older")
+```
+
+
+First, let's look at the "control", how eating little fruits correlates with eating little vegetables within the different age groups:
+
+
+```` {r include = TRUE}
+
+spearman_corr(young_adults$little_fruit, young_adults$little_vegies)
+spearman_corr(adults$little_fruit, adults$little_vegies)
+spearman_corr(older_adults$little_fruit, older_adults$little_vegies)
+spearman_corr(midage$little_fruit, midage$little_vegies)
+spearman_corr(older_midage$little_fruit, older_midage$little_vegies)
+spearman_corr(older$little_fruit, older$little_vegies)
+```
+
+
+We see a rather constant, positive, moderate, and highly statistically significant correlation between avoiding dietary fruits and avoiding dietary vegetables in all age groups.
+
+And how does not eating many fruits correlated with the prevalence of obesity:
+
+
+```` {r include = TRUE}
+
+spearman_corr(young_adults$little_fruit, young_adults$obesity_rate)
+spearman_corr(adults$little_fruit, adults$obesity_rate)
+spearman_corr(older_adults$little_fruit, older_adults$obesity_rate)
+spearman_corr(midage$little_fruit, midage$obesity_rate)
+spearman_corr(older_midage$little_fruit, older_midage$obesity_rate)
+spearman_corr(older$little_fruit, older$obesity_rate)
+```
+
+
+Broken to age groups, avoiding dietary fruits now looks more strongly correlated with obesity. It is positive, highly statistically significant, increasing with age but falling again among the oldest age group. 
+
+Adding some personal lamentation, I did not expect that strong a correlation between not eating much fruits and obesity rate. I speculate that this results or similar findings are behind the decision of Weight Watchers to allow unlimited amount of fruit in their diets, even though fruits contain considerable number of calories.
+
+As for the correlation between shunning vegetables and obesity:
+
+
+```` {r include = TRUE}
+
+spearman_corr(young_adults$little_vegies, young_adults$obesity_rate)
+spearman_corr(adults$little_vegies, adults$obesity_rate)
+spearman_corr(older_adults$little_vegies, older_adults$obesity_rate)
+spearman_corr(midage$little_vegies, midage$obesity_rate)
+spearman_corr(older_midage$little_vegies, older_midage$obesity_rate)
+spearman_corr(older$little_vegies, older$obesity_rate)
+```
+
+
+Here too, when looking at each age group separately, the picture looks different: positive correlation between not eating vegetables and obesity in all age groups. It is also age dependent and tends to be stronger (and statistically significant) at mid-age and older mid-age, then fall again. The biggest surprise - to me at least, is that it is a rather weak association even at it its strongest. 
+
+Correlation tells us how consistently one variable changes with the other. Below is an attempt to visualize the extent of the co-variance using regression line. Of course, linear regression assumes linearity, which we do not have here, but it is used here as a descriptive mean only.
+
+
+```` {r include = TRUE, message = FALSE, fig.dim = c(11, 6), fig.align="center"}
+
+df_list <- list(young_adults, adults, older_adults,
+                midage, older_midage, older)
+dif_year<-c("age 18 to 24", "age 25 to 34", "age 35 to 44",
+            "age 45 to 54", "age 55 to 64", "65 and older")
+
+List <- list()
+
+for (age_gp in seq_along(df_list)){
+  
+  a<- ggplot(df_list[[age_gp]]) + 
+    geom_point(aes(little_vegies, little_fruit), color="blue", alpha=0.3, size = 0.5) + 
+    geom_smooth(aes(little_vegies, little_fruit), method=lm, color = "blue", se=FALSE) +
+    geom_point(aes(little_fruit, obesity_rate), colour="red", alpha=0.3, size = 0.5) + 
+    geom_smooth(aes(little_fruit, obesity_rate), method=lm, color = "red", se=FALSE) +
+    geom_point(aes(little_vegies, obesity_rate), colour="darkgreen", alpha=0.3, size = 0.5) +
+    geom_smooth(aes(little_vegies, obesity_rate), method=lm, color = "darkgreen", se=FALSE)+
+    xlab("% participants")+
+    ylab("% participants")+
+    ggtitle (dif_year[age_gp])
+  
+  List[[age_gp]]<-a
+}
+
+x<-wrap_plots(List,nrow = 2)
+x+ plot_annotation(
+  title = "association between dietery habits and obesity rate", theme = theme(plot.title = element_text(size = 18)))
+```
+
+
+In the above plot:
+ **<span style="color:blue">blue: </span>** consuming little dietary fruits vs. consuming little dietary vegetables, 
+  **<span style="color:red">red:</span>** consuming little dietary fruits vs. obesity rate, 
+ **<span style="color:green">green:</span>** consuming little dietary vegetables  vs. obesity rate.
+
+In sum, eating little fruits can be, at certain age groups, as strongly associated with obesity as it with eating little vegetables. The rate of obesity, however, changes very little with different rate of vegetables shunning. 
+
+We need to keep in mind, though, that association is not causation. Whether it is diet that drives obesity or the tendency to become obese that drives diet choice - these results give something to think about. 
+
+
+## <span style="color:red">Obesity and exercise</span>
+
+
+In this section the relationship between exercising and the prevalence of obesity is explored. Participant were asked to put themselves in one of five categories, with the questions phrased as follows:
+
+1. "Percent of adults who engage in no leisure-time physical activity"
+2. "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)"
+3. "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic physical activity and engage in muscle-strengthening activities on 2 or more days a week"
+4. "Percent of adults who engage in muscle-strengthening activities on 2 or more days a week"
+5. "Percent of adults who achieve at least 300 minutes a week of moderate-intensity aerobic physical activity or 150 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)"
+
+To ease the analysis and presentation, the categories will be shortened to:
+
+1. no_exercise
+2. moderate_aerobic
+3. moderate_aerobics_and_strength
+4. Strength
+5. high_aerobic
+
+
+```` {r include = TRUE}
+
+# Extracting the data and renaming the questions:
+exercise <-obesity_final
+exercise$Question[exercise$Question == "Percent of adults who engage in no leisure-time physical activity"] <- "no_exercise"
+exercise$Question[exercise$Question == "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)"] <- "moderate_aerobic"
+exercise$Question[exercise$Question == "Percent of adults who achieve at least 150 minutes a week of moderate-intensity aerobic physical activity or 75 minutes a week of vigorous-intensity aerobic physical activity and engage in muscle-strengthening activities on 2 or more days a week"] <- "moderate_aerobics_and_strength"
+exercise$Question[exercise$Question == "Percent of adults who engage in muscle-strengthening activities on 2 or more days a week"] <- "strength"
+exercise$Question[exercise$Question == "Percent of adults who achieve at least 300 minutes a week of moderate-intensity aerobic physical activity or 150 minutes a week of vigorous-intensity aerobic activity (or an equivalent combination)"] <- "high_aerobic"
+exercise$Question[exercise$Question == "Percent of adults aged 18 years and older who have obesity"] <- "obesity_rate"
+```
+
+
+Let's look first at the numbers, what are the reported exercise habits of American over the years.
+
+
+```` {r include = TRUE, message = FALSE, warning = FALSE, fig.dim = c(11, 8)}
+
+# Preparing the data:
+exercise_habits<-exercise%>%
+  filter(Question %in% c("no_exercise", "moderate_aerobic", "moderate_aerobics_and_strength", "strength", "high_aerobic"))%>%
+  filter(StratificationCategory1=="Age (years)")%>%
+  rename(habits = Question)
+
+# Creating a function that builds the plots for each year:
+Age<-sort((unique(exercise_habits$Stratification1)))
+exer_year<-c(2011, 2013, 2015, 2017, 2019)
+
+mltplt<-function(yeer) {
+  
+  List <- list()
+  
+  for (age_group in seq_along (Age))
+  {
+    exercise_yr<-
+      exercise_habits%>%
+      filter(YearEnd == yeer, Stratification1== Age[age_group])%>%
+      mutate (habits = factor(habits, levels=c("no_exercise", "strength", "moderate_aerobic", "moderate_aerobics_and_strength", "high_aerobic")))
+    
+    a<-exercise_yr%>%
+      ggplot(aes(x=habits, y=Data_Value, fill=habits))+
+      scale_fill_brewer(palette="RdYlBu")+
+      geom_boxplot(alpha=0.7)+
+      ylab("percent of participants") +
+      ggtitle (paste( "age", Age[age_group] ))+
+      ylim(0,70)+
+      theme(
+        legend.position="none",
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_text(size=10, 
+                                 angle=45, hjust = 0.9),
+        axis.title.y = element_text(size = 10)
+      )
+    
+    List[[age_group]]<-a
+  }
+  
+# Wrap plots:
+  z<-wrap_plots(List,nrow = 2)
+  z+ plot_annotation(
+    title = yeer, theme = theme(plot.title = element_text(size = 18)))
+}
+
+# Calling the function for the different years:
+mltplt(exer_year[1])
+mltplt(exer_year[2])
+mltplt(exer_year[3])
+mltplt(exer_year[4])
+mltplt(exer_year[5])
+```
+
+
+There are few takeaways:
+
+One, it looks like the exercising habits of US residents were rather stable during the years of the survey.
+
+Second, most participants testify that they do exercise! While the survey cannot determine how effectively they exercise, exercising is, by itself, a major part of American way of life.
+
+Third, the number of those who do not exercise increase with age, though it is the minority of responders in all age groups.
+
+Fourth, moderate aerobics is the most popular among four exercise categories, with intense aerobics follows. 
+
+And how is exercise associated with obesity?
+
+As with dietary habits, we will join the data on itself to present the exercising and the obesity rate of each state, year, and age in one row. (Here done simply by widening the table, making each question a column by itself):
+
+
+```` {r include = TRUE}
+
+exercise<-exercise%>%
+  filter(Question %in% c("no_exercise", "moderate_aerobic", "moderate_aerobics_and_strength", "strength", "high_aerobic", "obesity_rate"))%>%
+  filter(StratificationCategory1=="Age (years)")%>%
+  select ("YearEnd", "LocationDesc", "Question", "Stratification1", "Data_Value")
+
+exercise_wide<- spread(exercise, Question, Data_Value)
+obesity_exercise <- exercise_wide[complete.cases(exercise_wide), ]
+```
+
+
+Are the data of normal distribution?
+
+
+```` {r include = TRUE}
+
+shapiro.test(obesity_exercise$no_exercise)[2]
+shapiro.test(obesity_exercise$moderate_aerobic)[2]
+shapiro.test(obesity_exercise$moderate_aerobics_and_strength)[2]
+shapiro.test(obesity_exercise$strength)[2]
+shapiro.test(obesity_exercise$high_aerobic)[2]
+shapiro.test(obesity_exercise$obesity_rate)[2]
+```
+
+
+No, so Spearman correlation coefficient is used:
+
+
+```` {r include = TRUE}
+
+spearman_corr(obesity_exercise$no_exercise, obesity_exercise$obesity_rate)
+spearman_corr(obesity_exercise$moderate_aerobic, obesity_exercise$obesity_rate)
+spearman_corr(obesity_exercise$moderate_aerobics_and_strength, obesity_exercise$obesity_rate)
+spearman_corr(obesity_exercise$strength, obesity_exercise$obesity_rate)
+spearman_corr(obesity_exercise$high_aerobic, obesity_exercise$obesity_rate)
+```
+
+
+We see moderate size, highly significant, positive correlation between not exercising and obesity. Similarly, moderate, highly significant, negative correlation exist between prevalence of obesity and the exercising habits. The strength of correlation is comparable between obesity rate and the different exercising habits, though interestingly it is somewhat weaker for obesity and high aerobic exercising. 
+
+To get an idea of how strong the association is, we can draw a linear regression line between exercising rate and obesity rate for the different exercising habits. Here, too, this is done for the sake of visualization; no linear relationship between exercise and obesity is claimed.
+
+
+```` {r include = TRUE, message = FALSE, fig.dim = c(8, 9)}
+
+no_ex<- ggplot(obesity_exercise) + 
+  geom_point(aes(no_exercise, obesity_rate), color="royalblue3", size = 0.2) + 
+  geom_smooth(aes(no_exercise, obesity_rate), method=lm, color = "royalblue3", se=FALSE)+
+  ylab("% obese") +
+  xlab("not exercising, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+mod_aer<- ggplot(obesity_exercise) +
+  geom_point(aes(moderate_aerobic, obesity_rate), colour="red3", size=0.2) + 
+  geom_smooth(aes(moderate_aerobic, obesity_rate), method=lm, color = "red3", se=FALSE)+
+  ylab("% obese") +
+  xlab("moderate aerobic, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+mod_aer_str<- ggplot(obesity_exercise) +  
+  geom_point(aes(moderate_aerobics_and_strength, obesity_rate), colour="darkgreen", size=0.2) +
+  geom_smooth(aes(moderate_aerobics_and_strength, obesity_rate), method=lm, color = "darkgreen", se=FALSE)+
+  ylab("% obese") +
+  xlab("moderate aerobic +  muscle strenth, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+str<- ggplot(obesity_exercise) +  
+  geom_point(aes(strength, obesity_rate), colour="darkorchid4", size=0.2) +
+  geom_smooth(aes(strength, obesity_rate), method=lm, color = "darkorchid4", se=FALSE)+
+  ylab("% obese") +
+  xlab("muscle strenth, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+high_aer<- ggplot(obesity_exercise) +  
+  geom_point(aes(high_aerobic, obesity_rate), colour="darkorange", size=0.2) +
+  geom_smooth(aes(high_aerobic, obesity_rate), method=lm, color = "darkorange", se=FALSE)+
+  ylab("% obese") +
+  xlab("high intensity aerobics, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+compare<- ggplot(obesity_exercise) + 
+  geom_smooth(aes(no_exercise, obesity_rate), method=lm, color = "royalblue3", se=FALSE)+
+  geom_smooth(aes(obesity_rate, moderate_aerobic), method=lm, color = "red3", se=FALSE)+
+  geom_smooth(aes(obesity_rate, moderate_aerobics_and_strength), method=lm, color = "darkgreen", se=FALSE)+
+  geom_smooth(aes(obesity_rate, strength), method=lm, color = "darkorchid4", se=FALSE)+
+  geom_smooth(aes(obesity_rate, high_aerobic), method=lm, color = "darkorange", se=FALSE)+
+  ylab("% obese") +
+  xlab("habits, %")+
+  ggtitle("the regression lines only:")+
+  theme(plot.title = element_text(size=12), axis.title=element_text(size=8))+
+  ylim(0,80)
+
+layout <- "
+##AAA####
+BBB#CCC##
+DDD#EEE##
+##FFF####
+"
+no_ex + mod_aer + mod_aer_str + str + high_aer + compare+ plot_layout(design = layout)+
+  plot_annotation(
+    title = "obesity and exercise", theme = theme(plot.title = element_text(size = 18)))
+```
+
+
+We see the positive association between not exercising and the prevalence of obesity, and a negative association between all forms of exercising and obesity rate. The slope is the highest for muscle strength. In fact, even adding muscle strength to aerobic exercise is associated with reduce is prevalence of obesity.
+
+A word of caution: those the relation is about linear, but not quite. The following density plots may give a better feel of the (not perfect) linearity of the relationships:
+
+
+```` {r include = TRUE, message = FALSE, warning = FALSE, fig.dim = c(6, 8), fig.align="center"}
+
+no_ex_dense<-ggplot(obesity_exercise, aes(x=no_exercise, y=obesity_rate) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon")+
+  scale_fill_distiller(palette=1, direction=-1)+
+  ylab("% obese") +
+  xlab("not exercising, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,60)+
+  xlim(0,70)
+
+mod_aer_dense<-ggplot(obesity_exercise, aes(x=moderate_aerobic, y=obesity_rate) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon")+
+  scale_fill_distiller(palette=14, direction=-1)+
+  ylab("% obese") +
+  xlab("exercising: moderate aerobics %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,60)+
+  xlim(0,70)
+
+mod_aer_str_dense<-ggplot(obesity_exercise, aes(x=moderate_aerobics_and_strength, y=obesity_rate) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon")+
+  scale_fill_distiller(palette=5, direction=-1)+
+  ylab("% obese") +
+  xlab("exercising: moderate aerobics + strength, %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,60)+
+  xlim(0,70)
+
+str_dense<-ggplot(obesity_exercise, aes(x=strength, y=obesity_rate) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon")+
+  scale_fill_distiller(palette=13, direction=-1)+
+  ylab("% obese") +
+  xlab("exercising: strength %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,60)+
+  xlim(0,70)
+
+high_aer_dense<-ggplot(obesity_exercise, aes(x=high_aerobic, y=obesity_rate) ) +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon")+
+  scale_fill_distiller(palette=17, direction=-1)+
+  ylab("% obese") +
+  xlab("exercising: high aerobics %")+
+  theme(plot.title = element_text(size=10), axis.title=element_text(size=8))+
+  ylim(0,60)+
+  xlim(0,70)
+
+no_ex_dense / mod_aer_dense /mod_aer_str_dense/ str_dense/high_aer_dense +
+  plot_annotation(
+    title = "obesity and exercise: density plots", theme = theme(plot.title = element_text(size = 18)))
+```
+
+
+As in previous queries of the dataset, the data in all the plots above seem to be comprised of clusters. Though the nature of the clustering is not further explored here, it does look like the direction of the relationship is the same for all the clusters in a plot; it is the size of the effect that is differ between them.  
+
+This, of course, does not tell us the direction of causality. It is commonly assumed that exercise mitigate obesity, but it could also be that obese people are less likely to exercise - maybe for self-awareness and feeling that they are ridiculed, (remember the add boasting "no judgement zone?"), higher likelihood of being injured, disappointment from the effect of exercising on weight - follow- up studies do not show big effect of exercise on body weight. 
+
+Among exercise types, muscle strengthening is the one that is most strongly associated with reduce obesity rate. The true association is probably even stronger than the numbers indicate. This is because in public health studies obesity is typically inferred from BMI - a simple and non-invasive measure that estimate obesity from a person's height and body weight. But BMI over-estimates obesity of people who are heavy not because they have a lot of body fat but because their muscles are developed. Thus, among those who engage in muscle strengthening, there is likely an increased fraction of people who were classified as obese but are not. This would mask some of the association between muscle strengthening and reduced obesity rate. 
+
+Why is it muscle strengthening that is most strongly associated with reduced obesity? I admit being puzzled by this finding.  My expectation was that aerobic activity would be on the top on the list. There are several theoretical reasons for this expectation, the most obvious of which is that aerobic exercise typically burns more calories than muscle strengthening. One would therefore think it is easier to avoid positive energy balance and weight gain with aerobic exercise than with muscle strengthening. There are also observations that, while not strictly “scientific”, are hard to ignore: The different body built of elite athletes practicing muscle strength spots (think weightlifters) and aerobic sports (think marathon runners). The people you see on the gym lifting weights and those likely seen on the treadmill. Surely this subject merits a deeper look and I am looking forward to a better understanding of it.
+ 
+
+# <span style="color:blue">Final notes </span>
+
+Growing up toggling between overweight and obesity, I was taught to see obesity as a personal vice, one which is very easy to avoid: eat less. Indeed, that seems simple enough. You can eat less at any age, living at any area, being of any age or gender. You don't need a lot of money to eat less - if anything, eating less would also reward financially. You don't need high education to figure that large contains more calories than small. Everyone could be thin if they only chose to do the right thing.
+
+This dig into the dataset demonstrates, if nothing else, the complexity of obesity. The associations of obesity rate with numerous demographic factors are not easy to explain. Some of those factors, such as age, sex and race, are beyond our control. Others, such as education, income and residency area, can be controlled, but not with ease. And even the association of life style with obesity is not as simple and clear-cut as one would hope. In fact, what that surprised me most looking at the data is the clustering. Each factor is associated with obesity rate within some sub-populations and less so within others.
+
+And of course, as I tried to remind throughout the document, what we see are associations and not causations. it is easy and intuitive to assume obesity is a result. It might just as well be the cause. 
